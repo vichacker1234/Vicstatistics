@@ -1,0 +1,135 @@
+---
+title: "GARCH EXITO"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+```
+
+\section{Datos} 
+
+A continuación, consideramos datos de  las acciones del EXITO desde el año 2001 hasta el 2021, tenieno en cuenta que en el año 2020 sucedio una crisis debido a la pandemia del COVID 19, lo que la hace propensa a agrupaciones de volatilidad.
+
+```{r}
+raw_data <- read_excel("ExitoCompFil.xlsx")
+View(raw_data)
+attach(raw_data)
+names(raw_data)
+FMCC<-raw_data
+summary(FMCC)
+
+PrecioCierre<-raw_data$`Precio Cierre`
+#Se define como una serie de tiempo
+PrecioCierre1<-ts(PrecioCierre)
+acf(PrecioCierre1,lag=1000)
+pacf(PrecioCierre1)
+plot(PrecioCierre1,col="blue",main="Precio de cierre de las acciones de EXITO.",ylab="Valor acci�n")
+#Se va  a diferenciar la serie
+PrecioCierre2<-diff(PrecioCierre1)
+plot(PrecioCierre2,col="lightgreen", main="Serie diferenciada")
+abline
+acf(PrecioCierre2)
+pacf(PrecioCierre2,lag=100)
+pcierre_fit<-arma(PrecioCierre2,order=c(1,1))
+
+auto.arima(PrecioCierre2,max.p=1,max.q=1)
+summary(pcierre_fit)
+pcierre_fit$residuals
+plot(pcierre_fit$residuals)
+
+acf(PrecioCierre2,main="")
+acf(PrecioCierre2^2,main="")
+RES<-ts(pcierre_fit$residuals)
+acf(RES[-1])
+acf((RES[-1])^2)
+logreturns <- diff(log(PrecioCierre));#logreturns # Se calcula los retornos logarítmicos
+plot(logreturns, type="l", main="Retornos Logar�tmicos Precio Cierre Exito",col="5",ylab="R_t") # Gr�fico de los retornos
+```
+
+En la gráfica anterior de autocorrelaciones podemos evaluar si la serie está autocorrelacionada.
+
+En la siguiente gráfica, hay dos límites trazados. La línea roja representa los límites estándar bajo el supuesto de fuerte ruido blanco. La segunda línea de color azul está bajo la hipótesis de que el proceso es GARCH. 
+
+```{r}
+library(sarima)
+library(stats4)
+FMCClr.acf <- autocorrelations(logreturns)
+FMCClr.pacf <- partialAutocorrelations(logreturns)
+plot(FMCClr.acf, data = logreturns)
+```
+
+Varias autocorrelaciones parecen significativas bajo la hipótesis del iid. Esto puede llevarnos a ajustar un modelo ARMA o ARMA-GARCH. Por otro lado, las autocorrelaciones están bien en las bandas producidas bajo la hipótesis GARCH, sugiriendo un modelo GARCH puro, sin cualquier término ARMA. 
+
+En la siguiente gráfica, se muestra la función de autocorrelación parcial que tambien se puede utilizar en lugar de las autocorrelaciones, con similares inferencias.
+
+```{r}
+plot (FMCClr.pacf, data = logreturns)
+```
+
+
+Por lo tanto, es importante en qué prueba basamos nuestra decisión.
+
+Pruebas de Pormanteau
+
+Las pruebas de rutina, como Ljung-Box, también rechazan la hipótesis IID. Aquí llevamos pruebas de IID utilizando el método de Li-McLeod:
+
+```{r}
+wntLM <- whiteNoiseTest(FMCClr.acf, h0 = "iid", nlags = c(5,10,20,30), 
+                        x = logreturns, method = "LiMcLeod");wntLM$test
+```
+
+Los P-Valores pequeños en 10,20 y 30 retardos, conducen al rechazo de la hipótesis nula en niveles razonables y en este caso, rechazar la hipótesis nula significa que los datos están autocorrelacionados.
+
+Probaremos si el modelo se puede ajustar a un modelo de tipo GARCH usando la misma prueba pero cambiando la hipotesis nula a "garch" (GARCH):
+
+```{r}
+wntg <- whiteNoiseTest(FMCClr.acf, h0 = "garch", nlags = c(5,10,15,30), 
+                        x = logreturns);wntg$test
+```
+
+Los P-Valores altos no dan razón para rechazar la hipótesis de que los retornos logarítmicos son un proceso de ruido blanco GARCH. En otras palabras, no hay necesidad de modelar ARMA.
+
+
+Montaje de los modelos GARCH (1,1) y sus variantes
+
+
+Con base en la discusión anterior, pasamos a ajustar el modelo (s) GARCH, comenzando con un modelo GARCH(1,1) con innovaciones gaussianas.
+
+
+```{r}
+library(fGarch)
+fit1 <- ?garchFit(~garch(1,1), data = logreturns, trace = FALSE)
+summary(fit1)
+```
+
+Los diagnósticos sugieren que los residuos estandarizados y sus cuadrados son IID y que el modelo ha acomodado los efectos ARCH. Sin embargo, su distribución claramente no es gaussiana (consulte los valores p para las pruebas de Jarque-Bera y Shapiro-Wilk), por lo que se puede probar con otra distribución condicional. 
+
+Otro posible problema es que α1 + β1 > 0.
+
+```{r}
+fit2 <- garchFit(~garch(1,1), cond.dist = c("sstd"), data = logreturns, trace = FALSE)
+summary(fit2)
+```
+
+El gráfico qq de los residuos estandarizados sugiere que la distribución condicional ajustada de sesgo t estandarizado no es lo suficientemente buena.
+
+```{r}
+plot(fit2, which = 13)
+```
+```{r}
+fit3 <- garchFit(~aparch(1,1), cond.dist = c("sstd"), data = logreturns, trace = FALSE)
+summary(fit3)
+```
+
+Las gráficas qq de los resultados estandarizados para todos los modelos ajustados arriba sugieren que las distribuciones condicionales elegidas no son satisfactorias. Además, las distribuciones t estandarizadas ajustadas tienen parámetros de forma (grados de libertad) ligeramente superiores a dos. Sugiere colas extremadamente pesadas, tal vez incluso la necesidad de distribuciones estables.
+
+Tenga en cuenta también que en todos los modelos anteriores α1 + β1 es mayor que uno, una posible violación de cualquier forma de estacionariedad. O tal vez, es solo que los modelos GARCH probados aquí no pueden adaptarse a comportamientos variables antes, durante y después de la crisis financiera.
+
